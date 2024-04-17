@@ -1,0 +1,92 @@
+module top (
+// clk && rst
+input		clk,
+input		rst_n,
+
+// 0 : key; 1 : data
+input		data_flag,
+// 0 : encoder; 1 : decoder
+input		mode_flag,
+
+input		uart_rx,
+output		uart_tx
+);
+
+parameter BAUD_RATE = 115200; //serial baud rate
+
+wire		rx_data_valid;
+wire	[7:0]	rx_data;
+wire		aes_in_vld;
+wire	[127:0]	aes_in;
+wire		aes_out_vld;
+wire	[127:0]	aes_out;
+wire		tx_data_vld;
+wire	[7:0]	tx_data;
+
+// ---------------------------------------------------------------------
+// uart rx part
+uart_rx #( .BAUD_RATE(BAUD_RATE)) uart_rx_i0 (
+	.clk		(clk		),
+	.rst_n		(rst_n		),
+	.rx_data	(rx_data	),
+	.rx_data_valid	(rx_data_valid	),
+	.rx_data_ready	(1'b1		),
+	.rx_pin		(uart_rx	));
+
+// 8bit in --> 128 bit out
+s2p s2p_i0 (
+	.clk		(clk		),
+	.rst_n		(rst_n		),
+
+	.din_vld	(rx_data_valid	),
+	.din		(rx_data	),
+
+	.dout_vld	(aes_in_vld	),
+	.dout		(aes_in		));
+
+aes_endec aes_i0 (
+// clk && rst
+	.clk		(clk		),
+	.rst_n		(rst_n		),
+
+// Control signal
+// 0 : key; 1 : data
+	.data_flag	(data_flag	),
+// 0 : encoder; 1 : decoder
+	.mode_flag	(mode_flag	),
+
+// state
+//	.busy		(/*led*/	),
+
+// AES interface
+	.aes_in_vld	(aes_in_vld	),
+	.aes_in		(aes_in		),
+
+	.aes_out_vld	(aes_out_vld	),
+	.aes_out	(aes_out	));
+
+// 128bit in --> 8 bit out
+p2s p2s_i0 (
+	.clk		(clk		),
+	.rst_n		(rst_n		),
+
+	.ready		(tx_data_ready	),
+
+	.din_vld	(aes_out_vld	),
+	.din		(aes_out	),
+
+	.dout_vld	(tx_data_vld	),
+	.dout		(tx_data	));
+
+
+uart_tx #( .BAUD_RATE(BAUD_RATE)) uart_tx_i0 (
+// clk && rst
+	.clk		(clk		),
+	.rst_n		(rst_n		),
+
+	.tx_data	(tx_data	),
+	.tx_data_valid	(tx_data_vld	),
+	.tx_data_ready	(tx_data_ready	),
+	.tx_pin		(uart_tx	));
+
+endmodule
