@@ -1,0 +1,65 @@
+// 128bit in --> 8 bit out
+module p2s (
+input		clk,
+input		rst_n,
+
+input		ready,
+
+input		din_vld,
+input	[127:0]	din,
+
+output		dout_vld,
+output	[7:0]	dout
+);
+
+// parameter
+parameter  IDLE  = 2'd0;
+parameter  WAIT  = 2'd1;
+parameter  SEND  = 2'd2;
+
+// wire && reg
+reg	[1:0]	cu_st;
+reg	[1:0]	ne_st;
+reg	[127:0]	data_reg;
+reg	[3:0]	cnt;
+wire		done;
+
+// FSM
+always @(posedge clk) begin
+    if (~rst_n) begin
+        cu_st <= IDLE;
+    end
+    else begin
+        cu_st <= ne_st;
+    end
+end
+
+always @(*) begin
+    case (cu_st)
+        IDLE    : ne_st = din_vld  ? WAIT : IDLE;
+        WAIT    : ne_st = ready    ? SEND : WAIT;
+        SEND    : ne_st = done     ? IDLE : WAIT;
+        default : ne_st = IDLE;
+    endcase
+end
+
+always @(posedge clk) begin
+    if (~rst_n) begin
+        data_reg <= 'd0;
+        cnt      <= 'd0;
+    end
+    else if (din_vld)  begin
+        data_reg <= din;
+        cnt      <= 'd0;
+    end
+    else if (cu_st == SEND) begin
+        data_reg <= {data_reg[119:0], 8'd0};
+        cnt      <= cnt + 1'b1;
+    end
+end
+
+assign	done     = cnt == 4'd15;
+assign	dout_vld = (cu_st == SEND);
+assign	dout     = data_reg[127:120];
+
+endmodule

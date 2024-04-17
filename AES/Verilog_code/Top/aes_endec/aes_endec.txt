@@ -1,0 +1,297 @@
+module aes_endec(
+// System signal
+clk,
+rst_n,
+// Control signal
+// 0 : key; 1 : data
+data_flag,
+// 0 : encoder; 1 : decoder
+mode_flag,
+
+// AES interface
+aes_in_vld,
+aes_in,
+aes_out_vld,
+aes_out);
+
+
+//==========================================================================
+//  Parameters
+//==========================================================================
+
+parameter   ST_INIT     = 3'b000;
+parameter   ST_IDLE     = 3'b001;
+parameter   ST_ROUND    = 3'b011;
+parameter   ST_FINAL    = 3'b111;
+parameter   ST_END      = 3'b110;
+parameter   ST_KEY_GEN  = 3'b100;
+
+
+//==========================================================================
+//  I/O Signals
+//==========================================================================
+
+// System signal
+input   wire                clk;
+input   wire                rst_n;
+// Control signal
+input   wire                data_flag;
+input   wire                mode_flag;
+// AES interface
+input   wire                aes_in_vld;
+input   wire        [127:0] aes_in;
+output  wire                aes_out_vld;
+output  wire        [127:0] aes_out;
+
+
+//==========================================================================
+//  Internal Signals
+//==========================================================================
+reg                input_ready;
+reg        [127:0] input_data;
+reg        [127:0] key_data;
+reg                key_dec_req;
+
+wire                enc_round_init;
+wire                enc_round_final;
+wire        [127:0] enc_round_key;
+wire        [127:0] enc_round_in;
+wire        [127:0] enc_round_out;
+
+wire                dec_round_init;
+wire                dec_round_final;
+wire        [127:0] dec_round_key;
+wire        [127:0] dec_round_in;
+wire        [127:0] dec_round_out;
+
+reg                 round_init;
+reg                 round_final;
+reg         [127:0] round_reg;
+
+wire        [127:0] round_in;
+wire        [127:0] round_key;
+reg           [3:0] round_count;
+reg           [2:0] round_state;
+reg           [2:0] next_state;
+reg                 ctrl_rcincre;
+reg                 ctrl_feedback;
+reg                 ctrl_transform;
+reg                 key_init;
+reg                 key_dec_start;
+
+reg  [127:0]        input_data_tmp;
+reg  [ 31:0]        cur_lba_tmp;
+wire [127:0]        xts_out_data;
+
+reg                 output_ready;
+wire                wen;
+reg  [127:0]        key_mem[0:10];
+
+//==========================================================================
+//  Main Description
+//==========================================================================
+
+//--------------------------------------------
+//  save data
+//--------------------------------------------
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n) input_data <=   128'b0;
+    else if(data_flag && aes_in_vld) input_data <= aes_in;
+
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n) input_ready <=   1'b0;
+    else            input_ready <=   (data_flag && aes_in_vld);
+
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n) key_data <=   128'b0;
+    else if(~data_flag && aes_in_vld) key_data <= aes_in;
+
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n) key_dec_req <=   1'b0;
+    else            key_dec_req <=   (~data_flag && aes_in_vld);
+    
+
+//--------------------------------------------
+//  Round input and output
+//--------------------------------------------
+assign round_in       = (ctrl_feedback)? round_reg : input_data;
+
+assign aes_out        = round_reg;
+
+
+//--------------------------------------------
+//  Round register
+//--------------------------------------------
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n                ) round_reg <=   128'b0;
+    else if(ctrl_transform & ~mode_flag) round_reg <=   enc_round_out;
+    else if(ctrl_transform &  mode_flag) round_reg <=   dec_round_out;
+
+
+//--------------------------------------------
+//  Round counter
+//--------------------------------------------
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n      ) round_count <=   4'b0;
+    else if(ctrl_rcincre) round_count <=   round_count + 4'b1;
+    else                  round_count <=   4'b0;
+
+
+//--------------------------------------------
+//  Round control
+//--------------------------------------------
+assign enc_round_in    = (~mode_flag)? round_in    : 128'h0;
+assign enc_round_init  = (~mode_flag)? round_init  : 1'b0;
+assign enc_round_final = (~mode_flag)? round_final : 1'b0;
+assign enc_round_key   = (~mode_flag)? round_key   : 128'h0;
+
+assign dec_round_in    = ( mode_flag)? round_in    : 128'b0;
+assign dec_round_init  = ( mode_flag)? round_init  : 1'b0;
+assign dec_round_final = ( mode_flag)? round_final : 1'b0;
+//assign dec_round_key   = ( mode_flag)? round_key   : 128'h0;
+assign dec_round_key   = ( mode_flag)? key_mem[4'd10 - round_count] : 128'h0;
+
+
+//--------------------------------------------
+//  State Machine
+//--------------------------------------------
+always @(posedge clk or negedge rst_n)
+    if     (~rst_n    ) round_state <=   ST_INIT;
+    else                round_state <=   next_state;
+
+always @* begin
+    next_state      = round_state;
+    output_ready    = 1'b0;
+    ctrl_rcincre    = 1'b0;
+    ctrl_feedback   = 1'b0;
+    ctrl_transform  = 1'b0;
+    key_init        = 1'b0;
+    key_dec_start   = 1'b0;
+    round_init      = 1'b0;
+    round_final     = 1'b0;
+    
+    case(round_state)
+        
+        ST_INIT : begin
+            next_state      = ST_IDLE;
+            key_init        = 1'b1;
+        end
+        
+        ST_KEY_GEN : begin
+            if(round_count==4'd10) begin
+                next_state      = ST_IDLE;
+            end
+            else begin
+                ctrl_rcincre    = 1'b1;
+            end
+        end
+        
+        ST_IDLE : begin
+            if(key_dec_req) begin
+                next_state      = ST_KEY_GEN;
+                ctrl_rcincre    = 1'b1;
+                key_dec_start   = 1'b1;
+            end
+            else if(input_ready) begin
+                next_state      = ST_ROUND;
+                ctrl_rcincre    = 1'b1;
+                ctrl_transform  = 1'b1;
+                round_init      = 1'b1;
+            end
+            key_init        = 1'b1;
+        end
+        
+        ST_ROUND : begin
+            if(round_count==4'd9) begin
+                next_state  = ST_FINAL;
+            end
+            ctrl_rcincre    = 1'b1;
+            ctrl_feedback   = 1'b1;
+            ctrl_transform  = 1'b1;
+        end
+        
+        ST_FINAL : begin
+            next_state      = ST_END;
+          //  output_ready    = 1'b1;
+            ctrl_feedback   = 1'b1;
+            ctrl_transform  = 1'b1;
+            round_final     = 1'b1;
+        end
+        
+        ST_END : begin
+            if(input_ready) begin
+                next_state      = ST_ROUND;
+                ctrl_rcincre    = 1'b1;
+                ctrl_transform  = 1'b1;
+                round_init      = 1'b1;
+            end
+            else begin
+                next_state      = ST_IDLE;
+            end
+            output_ready    = 1'b1;
+            key_init        = 1'b1;
+        end
+        
+        default : begin
+            next_state      = ST_INIT;
+        end
+        
+    endcase
+end
+
+
+//==========================================================================
+//  Module Connection
+//==========================================================================
+
+aes_round_enc aes_round_enc_x(
+    // Control signal
+    .round_init         (enc_round_init     ), // i
+    .round_final        (enc_round_final    ), // i
+    // Round signal
+    .round_key          (enc_round_key      ), // i
+    .round_in           (enc_round_in       ), // i
+    .round_out          (enc_round_out      )  // o
+);
+
+aes_round_dec aes_round_dec_x(
+    // Control signal
+    .round_init         (dec_round_init     ), // i
+    .round_final        (dec_round_final    ), // i
+    // Round signal
+    .round_key          (dec_round_key      ), // i
+    .round_in           (dec_round_in       ), // i
+    .round_out          (dec_round_out      )  // o
+);
+
+
+aes_key_schedule aes_key_schedule_x(
+    // System signal
+    .clk                (clk                ), // i
+    .rst_n              (rst_n              ), // i
+    // Control signal
+    .key_init           (key_init           ), // i
+    .round_count        (round_count        ), // i
+    // Key data
+    .key_data           (key_data           ), // i
+    .round_key          (round_key          )  // o
+);
+assign	aes_out_vld = output_ready;
+
+// use reg to save round key
+assign	wen = key_dec_start || (round_state == ST_KEY_GEN);
+
+integer i;
+always @(posedge clk or negedge rst_n) begin
+    if (~rst_n) begin
+        for (i=0;i<11;i=i+1)
+            key_mem[i] <= 'd0;
+    end
+    else if (wen) begin
+        key_mem[round_count] <= round_key;
+    end
+end
+
+
+
+endmodule

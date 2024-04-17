@@ -1,0 +1,42 @@
+// 8bit in --> 128 bit out
+module s2p (
+input		clk,
+input		rst_n,
+
+input		din_vld,
+input	[7:0]	din,
+
+output		dout_vld,
+output	[127:0]	dout
+);
+
+// wire && reg
+reg	[127:0]	shift_reg;
+reg	[3:0]	cnt;
+reg		vld;
+
+// shift reg save din
+always @(posedge clk) begin
+    if (~rst_n) begin
+        shift_reg <= 'd0;
+        cnt       <= 'd0;
+    end
+    else if (din_vld) begin
+        shift_reg <= {shift_reg[119:0], din};
+        cnt       <= cnt + 1'b1;
+    end
+end
+
+always @(posedge clk) begin
+    if (~rst_n) begin
+        vld <= 'd0;
+    end
+    else begin
+        vld <= din_vld && (& cnt);
+    end
+end
+
+assign	dout_vld = vld;
+assign	dout     = shift_reg;
+
+endmodule
